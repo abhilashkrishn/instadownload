@@ -51,9 +51,7 @@ if not raw_session_secret:
 SECRET_KEY = raw_session_secret.encode()
 
 COOKIE_NAME = "session_token"
-# Change 2: Configurable COOKIE_PATH defaulting to "/"
 COOKIE_PATH = os.getenv("COOKIE_PATH", "/")
-# Change 3: Configurable COOKIE_SECURE boolean
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
 SESSION_DURATION_SECONDS = 86400 * 30  # 30 days
 
@@ -80,7 +78,7 @@ def verify_session_token(token: str | None) -> bool:
     except (ValueError, TypeError):
         return False
 
-    # Change 1: Reject future timestamps and expired sessions
+    # Reject future timestamps and expired tokens
     if not (0 <= time.time() - timestamp <= SESSION_DURATION_SECONDS):
         return False
 
@@ -101,6 +99,8 @@ _executor = ThreadPoolExecutor(max_workers=2)
 _active_refs: dict[str, int] = defaultdict(int)
 # Events to allow concurrent requests to wait if a shortcode is already fetching
 _in_flight_events: dict[str, asyncio.Event] = {}
+# Detached tasks tracking thread pool workers across client disconnections
+_in_flight_tasks: dict[str, asyncio.Task] = {}
 _lifecycle_lock = asyncio.Lock()
 
 
@@ -211,7 +211,6 @@ async def api_login(credentials: LoginRequest):
 
     token = create_session_token(credentials.username)
     res = JSONResponse(content={"success": True})
-    # Change 3: pass secure=COOKIE_SECURE
     res.set_cookie(
         key=COOKIE_NAME,
         value=token,
@@ -228,7 +227,6 @@ async def api_login(credentials: LoginRequest):
 @app.get("/logout")
 async def logout():
     res = RedirectResponse(url="login", status_code=303)
-    # Using the same COOKIE_PATH for deletion
     res.delete_cookie(COOKIE_NAME, path=COOKIE_PATH)
     return res
 
@@ -254,6 +252,26 @@ class ProcessRequest(BaseModel):
     url: str = ""
 
 
+async def _execute_download_job(shortcode: str, target_folder: str) -> str | None:
+    """Executes the Instaloader download in the worker pool and guarantees
+    lifecycle teardown only after the worker thread finishes, independent of
+    client HTTP cancellation.
+    """
+    loop = asyncio.get_running_loop()
+    error_msg = None
+    try:
+        await loop.run_in_executor(_executor, _run_instaloader, shortcode, target_folder)
+    except Exception as exc:
+        error_msg = str(exc)
+    finally:
+        async with _lifecycle_lock:
+            _in_flight_tasks.pop(shortcode, None)
+            event = _in_flight_events.pop(shortcode, None)
+            if event:
+                event.set()
+            _decrement_shortcode_locked(shortcode)
+    return error_msg
+    
 @app.post("/api/process")
 async def process_url(body: ProcessRequest, request: Request) -> JSONResponse:
     if not verify_session_token(request.cookies.get(COOKIE_NAME)):
@@ -283,9 +301,13 @@ async def process_url(body: ProcessRequest, request: Request) -> JSONResponse:
             if mp4_files or image_files:
                 download_url = f"download/{shortcode}?t={int(time.time())}"
                 return JSONResponse({"success": True, "download_url": download_url})
+            
+            # Directory registered but empty or missing valid files; clean and redownload
             should_download = True
             _in_flight_events[shortcode] = asyncio.Event()
             _active_refs[shortcode] += 1
+            shutil.rmtree(target_folder, ignore_errors=True)
+            os.makedirs(target_folder, exist_ok=True)
         else:
             should_download = True
             _in_flight_events[shortcode] = asyncio.Event()
@@ -310,19 +332,19 @@ async def process_url(body: ProcessRequest, request: Request) -> JSONResponse:
             await _release_shortcode(shortcode)
 
     # 4. Perform extraction
+# 4. Perform extraction decoupled from HTTP request cancellation
     if should_download:
-        loop = asyncio.get_running_loop()
-        download_error = None
+        task = asyncio.create_task(_execute_download_job(shortcode, target_folder))
+        async with _lifecycle_lock:
+            _in_flight_tasks[shortcode] = task
+
         try:
-            await loop.run_in_executor(_executor, _run_instaloader, shortcode, target_folder)
-        except Exception as exc:
-            download_error = str(exc)
-        finally:
-            async with _lifecycle_lock:
-                event = _in_flight_events.pop(shortcode, None)
-                if event:
-                    event.set()
-                _decrement_shortcode_locked(shortcode)
+            # Shield the download task from caller cancellation
+            download_error = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # If the HTTP client aborts, allow the task to continue to completion
+            # so the thread and directories are not abandoned or corrupt.
+            raise
 
         if download_error:
             return JSONResponse(
@@ -376,7 +398,6 @@ async def download_file(shortcode: str, request: Request):
         "Expires": "0",
     }
 
-    # Change 4: Construct FileResponse inside try/except; release ref if construction fails
     try:
         return FileResponse(
             path=selected_file,
