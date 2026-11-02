@@ -1,0 +1,14 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+downloads/
+certifi/
+charset_normalizer/
+idna/
+instaloader/
+requests/
+urllib3/
+.git/
+.idea/
+.vscode/

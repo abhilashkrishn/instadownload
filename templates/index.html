@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Local Instagram Downloader</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f0f2f5;
+      margin: 0;
+      padding: 40px 20px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 80vh;
+    }
+    .card {
+      background: #ffffff;
+      padding: 35px 30px;
+      border-radius: 16px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+      max-width: 460px;
+      width: 100%;
+      text-align: center;
+      box-sizing: border-box;
+      position: relative;
+    }
+    .logout-btn {
+      position: absolute;
+      top: 18px;
+      right: 20px;
+      color: #8a8d91;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 6px 10px;
+      border-radius: 6px;
+      transition: background 0.2s, color 0.2s;
+    }
+    .logout-btn:hover {
+      background: #f0f2f5;
+      color: #dc2743;
+    }
+    h2 {
+      margin-top: 10px;
+      margin-bottom: 8px;
+      color: #1c1e21;
+      font-size: 24px;
+    }
+    p {
+      color: #65676b;
+      font-size: 14px;
+      margin-bottom: 24px;
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: 14px 16px;
+      margin-bottom: 16px;
+      border: 1.5px solid #e4e6eb;
+      border-radius: 10px;
+      font-size: 15px;
+      box-sizing: border-box;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input[type="text"]:focus {
+      border-color: #0095f6;
+    }
+    button[type="submit"] {
+      width: 100%;
+      background: linear-gradient(45deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888);
+      color: white;
+      border: none;
+      padding: 14px;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.1s;
+    }
+    button[type="submit"]:hover {
+      opacity: 0.95;
+    }
+    button[type="submit"]:active {
+      transform: scale(0.99);
+    }
+    .alert {
+      background: #ffebe8;
+      border: 1px solid #dd3c10;
+      color: #dd3c10;
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 18px;
+      font-size: 14px;
+      display: none;
+    }
+    .success-alert {
+      background: #e7f8ed;
+      border: 1px solid #2ecc71;
+      color: #27ae60;
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 18px;
+      font-size: 14px;
+      font-weight: 600;
+      display: none;
+    }
+    #loadingState {
+      display: none;
+      margin-top: 24px;
+      animation: fadeIn 0.3s ease-in-out;
+    }
+    .spinner {
+      width: 50px;
+      height: 50px;
+      margin: 0 auto 16px;
+      border-radius: 50%;
+      background: conic-gradient(from 0deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888, transparent);
+      mask: radial-gradient(farthest-side, transparent calc(100% - 6px), #fff 0);
+      -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 6px), #fff 0);
+      animation: spin 0.9s linear infinite;
+    }
+    .status-text {
+      color: #1c1e21;
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .sub-text {
+      color: #8a8d91;
+      font-size: 13px;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <!-- 1. Relative logout URL -->
+    <a href="logout" class="logout-btn">Log Out</a>
+
+    <h2>Insta Media Saver</h2>
+    <p>Paste a Post or Reel URL to fetch your media cleanly.</p>
+
+    <div id="errorAlert" class="alert"></div>
+    <div id="successMsg" class="success-alert">✓ Media ready! Download started.</div>
+
+    <form id="downloadForm">
+      <input type="text" id="urlInput" placeholder="https://www.instagram.com/reels/..." required autocomplete="off">
+      <button type="submit" id="submitBtn">Download</button>
+    </form>
+
+    <div id="loadingState">
+      <div class="spinner"></div>
+      <div class="status-text" id="statusMessage">Connecting to Instagram...</div>
+      <div class="sub-text">Please wait, preparing your download</div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById("downloadForm");
+    const submitBtn = document.getElementById("submitBtn");
+    const loadingState = document.getElementById("loadingState");
+    const statusMessage = document.getElementById("statusMessage");
+    const successMsg = document.getElementById("successMsg");
+    const errorAlert = document.getElementById("errorAlert");
+    const urlInput = document.getElementById("urlInput");
+
+    const messages = [
+      "Connecting to Instagram...",
+      "Extracting highest quality stream...",
+      "Processing media container...",
+      "Starting your download..."
+    ];
+
+    let messageInterval;
+
+    form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+
+      errorAlert.style.display = "none";
+      successMsg.style.display = "none";
+
+      const url = urlInput.value.trim();
+      if (!url) return;
+
+      submitBtn.disabled = true;
+      submitBtn.style.opacity = "0.6";
+      submitBtn.innerText = "Processing...";
+      loadingState.style.display = "block";
+      statusMessage.innerText = messages[0];
+
+      let msgIndex = 0;
+      messageInterval = setInterval(() => {
+        msgIndex = (msgIndex + 1) % messages.length;
+        statusMessage.innerText = messages[msgIndex];
+      }, 2500);
+
+      try {
+        // 2. Relative process API endpoint
+        const res = await fetch("api/process", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: url })
+        });
+
+        // 3. Relative login redirect
+        if (res.status === 401) {
+          window.location.href = "login";
+          return;
+        }
+
+        const data = await res.json();
+        clearInterval(messageInterval);
+
+        if (!data.success) {
+          throw new Error(data.error || "Failed to process media.");
+        }
+
+        loadingState.style.display = "none";
+        submitBtn.disabled = false;
+        submitBtn.style.opacity = "1";
+        submitBtn.innerText = "Download";
+        urlInput.value = "";
+        successMsg.style.display = "block";
+
+        // Hand off to relative download URL returned by backend
+        window.location.href = data.download_url;
+
+      } catch (err) {
+        clearInterval(messageInterval);
+        loadingState.style.display = "none";
+        submitBtn.disabled = false;
+        submitBtn.style.opacity = "1";
+        submitBtn.innerText = "Download";
+        errorAlert.innerText = err.message;
+        errorAlert.style.display = "block";
+      }
+    });
+  </script>
+</body>
+</html>
