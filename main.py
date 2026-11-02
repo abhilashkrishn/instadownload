@@ -271,7 +271,8 @@ async def _execute_download_job(shortcode: str, target_folder: str) -> str | Non
                 event.set()
             _decrement_shortcode_locked(shortcode)
     return error_msg
-    
+
+
 @app.post("/api/process")
 async def process_url(body: ProcessRequest, request: Request) -> JSONResponse:
     if not verify_session_token(request.cookies.get(COOKIE_NAME)):
@@ -301,7 +302,7 @@ async def process_url(body: ProcessRequest, request: Request) -> JSONResponse:
             if mp4_files or image_files:
                 download_url = f"download/{shortcode}?t={int(time.time())}"
                 return JSONResponse({"success": True, "download_url": download_url})
-            
+
             # Directory registered but empty or missing valid files; clean and redownload
             should_download = True
             _in_flight_events[shortcode] = asyncio.Event()
@@ -331,8 +332,7 @@ async def process_url(body: ProcessRequest, request: Request) -> JSONResponse:
         finally:
             await _release_shortcode(shortcode)
 
-    # 4. Perform extraction
-# 4. Perform extraction decoupled from HTTP request cancellation
+    # 4. Perform extraction decoupled from HTTP request cancellation
     if should_download:
         task = asyncio.create_task(_execute_download_job(shortcode, target_folder))
         async with _lifecycle_lock:
@@ -361,8 +361,18 @@ async def process_url(body: ProcessRequest, request: Request) -> JSONResponse:
             status_code=404,
         )
 
+    # Determine selected file and compute size for the UI progress animation
+    selected_path = mp4_files[0] if mp4_files else image_files[0]
+    file_bytes = os.path.getsize(selected_path)
+    file_mb = round(file_bytes / (1024 * 1024), 2)
+
     download_url = f"download/{shortcode}?t={int(time.time())}"
-    return JSONResponse({"success": True, "download_url": download_url})
+    return JSONResponse({
+        "success": True,
+        "download_url": download_url,
+        "file_size_mb": file_mb,
+        "file_bytes": file_bytes,
+    })
 
 
 @app.get("/download/{shortcode}")

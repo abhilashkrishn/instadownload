@@ -11,3 +11,4 @@ idna/
 instaloader/
 requests/
 urllib3/
+upload.ps1
